@@ -1,3 +1,5 @@
+import re
+import html
 from datetime import datetime
 from dateutil import parser
 from googleapiclient.discovery import build
@@ -8,15 +10,58 @@ from django.conf import settings
 API_KEY = settings.GOOGLE_API_KEY
 CALENDAR_ID = settings.GOOGLE_CALENDAR_ID
 
+import html
+import re
+
+
+def parse_event_description(description_text):
+    venue_name = "위치 없음"
+    address = "주소 없음"
+
+    if description_text:
+        # 1. HTML 엔티티(&nbsp; 등) 해제
+        text = html.unescape(description_text)
+
+        # 2. <p>, <br>, <div> 등 블록 태그를 줄바꿈(\n)으로 변환
+        text = re.sub(r'</?(p|br|div|tr|td)\s*/?>', '\n', text, flags=re.IGNORECASE)
+
+        # 3. 나머지 모든 HTML 태그 제거
+        text = re.sub(r'<[^>]+>', '', text)
+
+        # 4. 특수 공백(\xa0, \t 등)을 일반 공백으로 변환 및 \r 제거
+        text = text.replace('\xa0', ' ').replace('\r', '')
+
+        # 5. 会場 (회장명) 추출
+        # '会場:' 뒤부터 줄바꿈(\n) 전까지 추출하며, 중간에 ［, 【, [ 기호가 나오면 그 직전까지만 잘라냄
+        venue_match = re.search(
+            r"(?:会場)\s*[:：\-\】\s]\s*([^\n［【\[]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if venue_match:
+            venue_name = venue_match.group(1).strip()
+
+        # 6. 住所 (주소) 추출
+        # '住所:' 뒤부터 줄바꿈(\n) 전까지 추출하며, 중간에 ［, 【, [ 기호가 나오면 그 직전까지만 잘라냄
+        address_match = re.search(
+            r"(?:住所)\s*[:：\-\】\s]\s*([^\n［【\[]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if address_match:
+            address = address_match.group(1).strip()
+
+    return venue_name, address
+
+
 def get_schedule():
     try:
         service = build("calendar", "v3", developerKey=API_KEY)
         page_token = None
-        total_created = 0
-        total_skipped = 0
-        page_cnt = 1
+        success_cnt = 0
+        total_cnt = 0
 
-        print("=== 구글 캘린더 동기화 시작 ===")
+        print("=== 구글 캘린더 데이터 추출 시작 ===")
 
         while True:
             events_result = (
@@ -32,48 +77,45 @@ def get_schedule():
             )
 
             events = events_result.get("items", [])
-            print(f"[{page_cnt}페이지] {len(events)}개 일정 가져오는 중...")
 
             for event in events:
-                try:
-                    start_str = event["start"].get("dateTime", event["start"].get("date"))
+                total_cnt += 1
+                start_str = event["start"].get("dateTime", event["start"].get("date"))
+                event_date = parser.parse(start_str).date()
+                title = event.get("summary", "제목 없음")[:200]
 
-                    # 타임존에 상관없이 naive datetime으로 변환
-                    # parsed_dt = parser.parse(start_str)
-                    # event_date = parsed_dt.replace(tzinfo=None)
-                    event_date = parser.parse(start_str).date()
+                # description 파싱
+                description = event.get("description", "")
+                venue_name, address = parse_event_description(description)
 
-                    # DB max_length 에러 방지를 위해 200자 제한 (필요시 조절)
-                    title = event.get("summary", "제목 없음")[:200]
+                # description에 회장이 없는데 location 필드는 존재하는 경우
+                if venue_name == "위치 없음" and event.get("location"):
+                    venue_name = event.get("location")[:200]
 
-                    # DB에 저장
-                    _, created = Schedule_info.objects.get_or_create(
-                        event_title=title,
-                        event_date=event_date,
-                        defaults={
-                            "idol_name": "아이돌명",
-                            "event_category": "공식일정",
-                        },
-                    )
+                # DB 저장 (update_or_create)
+                Schedule_info.objects.update_or_create(
+                    event_title=title,
+                    event_date=event_date,
+                    defaults={
+                        "idol_name": "inuwasi",
+                        "event_category": "공식일정",
+                        "event_location": venue_name[:200],
+                        "event_address": address[:300],
+                    },
+                )
 
-                    if created:
-                        total_created += 1
-                    else:
-                        total_skipped += 1
-
-                except Exception as event_err:
-                    print(f"개별 일정 저장 실패 (건너뜀) - 제목: {event.get('summary')}, 에러: {event_err}")
+                if venue_name != "위치 없음" or address != "주소 없음":
+                    success_cnt += 1
+                    print(f"[성공] 날짜: {event_date} | 회장: {venue_name} | 주소: {address}")
 
             page_token = events_result.get("nextPageToken")
             if not page_token:
                 break
 
-            page_cnt += 1
-
-        print(f"=== 동기화 완료: 신규 추가 {total_created}건 / 기존 건너뜀 {total_skipped}건 ===")
+        print(f"=== 동기화 완료 (전체 {total_cnt}건 중 장소/주소 추출 {success_cnt}건) ===")
 
     except Exception as e:
-        print(f"구글 캘린더 연동 중 치명적 에러 발생: {e}")
+        print(f"구글 캘린더 연동 에러 발생: {e}")
 
 def index(request):
     # get_schedule()
