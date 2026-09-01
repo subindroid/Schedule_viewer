@@ -34,8 +34,9 @@
                         <tr>
                             <th>#</th>
                             <th>아이돌</th>
-                            <th>카테고리/위치</th>
+                            <th>카테고리</th>
                             <th style="text-align:left; padding-left:20px;">이벤트 제목</th>
+                            <th>장소 / 주소</th>
                             <th>날짜</th>
                         </tr>
                     </thead>
@@ -46,15 +47,22 @@
                         <tr>
                             <td class="td-num">{{ forloop.counter }}</td>
                             <td class="td-idol">
-                                <span class="idol-badge">{{ schedule.idol_name }}</span>
+                                <!-- 외래키 참조: schedule.idol.idol -->
+                                <span class="idol-badge">{{ schedule.idol.idol }}</span>
                             </td>
                             <td class="td-category">
-                                <span class="category-badge">{{ schedule.event_category }}</span>
-                                </td>
-                            <td class="td-title">
-                                <a href="">{{ schedule.event_title }}</a>
+                                <span class="category-badge">{{ schedule.event_category|default:"[공식일정]" }}</span>
                             </td>
-                            <td class="td-date">{{ schedule.event_date }}</td>
+                            <td class="td-title">
+                                <a href="#">{{ schedule.event_title }}</a>
+                            </td>
+                            <td class="td-location">
+                                <div><strong>{{ schedule.event_location }}</strong></div>
+                                {% if schedule.event_address and schedule.event_address != "주소 없음" %}
+                                    <small style="color: #888;">{{ schedule.event_address }}</small>
+                                {% endif %}
+                            </td>
+                            <td class="td-date">{{ schedule.event_date|date:"Y-m-d" }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -62,7 +70,8 @@
                     {% else %}
                     <tbody>
                         <tr class="empty-row">
-                            <td colspan="4">
+                            <!-- 헤더 개수인 6으로 수정 -->
+                            <td colspan="6">
                                 <div class="empty-icon">🌸</div>
                                 <div class="empty-text">등록된 스케줄이 없습니다</div>
                                 <div class="empty-sub">선택하신 기간에 해당하는 일정이 없어요</div>
@@ -76,7 +85,7 @@
 
         <!-- 일정 추가 버튼 -->
         <div class="add-btn-wrap">
-            <a class="add-btn" href="">
+            <a class="add-btn" href="#">
                 ✦ &nbsp;일정 추가 요청하기
             </a>
         </div>

@@ -1,18 +1,14 @@
-import re
 import html
+import re
 from datetime import datetime
 from dateutil import parser
 from googleapiclient.discovery import build
-from django.shortcuts import render, get_list_or_404
-from .models import Schedule_info
+
 from django.conf import settings
+from django.shortcuts import render, get_list_or_404
+from .models import Country_info, Idol_info, Schedule_info
 
 API_KEY = settings.GOOGLE_API_KEY
-CALENDAR_ID = settings.GOOGLE_CALENDAR_ID
-
-import html
-import re
-
 
 def parse_event_description(description_text):
     venue_name = "위치 없음"
@@ -32,7 +28,6 @@ def parse_event_description(description_text):
         text = text.replace('\xa0', ' ').replace('\r', '')
 
         # 5. 会場 (회장명) 추출
-        # '会場:' 뒤부터 줄바꿈(\n) 전까지 추출하며, 중간에 ［, 【, [ 기호가 나오면 그 직전까지만 잘라냄
         venue_match = re.search(
             r"(?:会場)\s*[:：\-\】\s]\s*([^\n［【\[]+)",
             text,
@@ -42,7 +37,6 @@ def parse_event_description(description_text):
             venue_name = venue_match.group(1).strip()
 
         # 6. 住所 (주소) 추출
-        # '住所:' 뒤부터 줄바꿈(\n) 전까지 추출하며, 중간에 ［, 【, [ 기호가 나오면 그 직전까지만 잘라냄
         address_match = re.search(
             r"(?:住所)\s*[:：\-\】\s]\s*([^\n［【\[]+)",
             text,
@@ -54,87 +48,120 @@ def parse_event_description(description_text):
     return venue_name, address
 
 
+def process_title_and_category(raw_title):
+    """
+    구글 캘린더 summary에서 [카테고리]와 「제목」을 분리하는 함수
+    """
+    category = "[공식일정]"
+    title = raw_title.strip()
+
+    # [카테고리], ［카테고리］, 【카테고리】 패턴 분리
+    match = re.match(r"^[\(\[\［\【](.+?)[\)\]\］\】]\s*(.+)$", title)
+    if match:
+        category = f"[{match.group(1)}]"
+        title = match.group(2).strip()
+
+    # 「 」 감싸기 포맷팅
+    title = re.sub(r'^[「\s]+|[」\s]+$', '', title)  # 기존 「 」 및 공백 정돈
+    title = f"「{title}」"
+
+    return category, title[:250]
+
 def get_schedule():
     try:
         service = build("calendar", "v3", developerKey=API_KEY)
-        page_token = None
-        success_cnt = 0
-        total_cnt = 0
 
-        print("=== 구글 캘린더 데이터 추출 시작 ===")
+        # 2. DB에 등록된 모든 아이돌(또는 특정 아이돌)을 조회합니다.
+        idols = Idol_info.objects.all()
 
-        while True:
-            events_result = (
-                service.events()
-                .list(
-                    calendarId=CALENDAR_ID,
-                    singleEvents=True,
-                    orderBy="startTime",
-                    pageToken=page_token,
-                    maxResults=250,
+        for idol_obj in idols:
+            # DB에 저장된 각 아이돌의 calendar_id를 사용합니다.
+            calendar_id = idol_obj.calendar_id
+
+            if not calendar_id:
+                print(f"[{idol_obj.idol}] calendar_id가 설정되어 있지 않습니다.")
+                continue
+
+            page_token = None
+            success_cnt = 0
+            total_cnt = 0
+
+            print(f"=== [{idol_obj.idol}] 구글 캘린더 데이터 추출 시작 ===")
+
+            while True:
+                events_result = (
+                    service.events()
+                    .list(
+                        calendarId=calendar_id,  # DB에서 가져온 calendar_id 사용
+                        singleEvents=True,
+                        orderBy="startTime",
+                        pageToken=page_token,
+                        maxResults=250,
+                    )
+                    .execute()
                 )
-                .execute()
+
+                events = events_result.get("items", [])
+
+                for event in events:
+                    total_cnt += 1
+                    start_str = event["start"].get(
+                        "dateTime", event["start"].get("date")
+                    )
+                    event_date = parser.parse(start_str).date()
+                    raw_summary = event.get("summary", "제목 없음")
+
+                    category, formatted_title = process_title_and_category(
+                        raw_summary
+                    )
+                    description = event.get("description", "")
+                    venue_name, address = parse_event_description(description)
+
+                    if venue_name == "위치 없음" and event.get("location"):
+                        venue_name = event.get("location")[:200]
+
+                    # 해당 idol_obj 객체와 매핑하여 저장
+                    Schedule_info.objects.update_or_create(
+                        idol=idol_obj,
+                        event_title=formatted_title,
+                        event_date=event_date,
+                        defaults={
+                            "event_category": category,
+                            "event_location": venue_name[:200],
+                            "event_address": address[:300],
+                        },
+                    )
+
+                    if venue_name != "위치 없음" or address != "주소 없음":
+                        success_cnt += 1
+
+                page_token = events_result.get("nextPageToken")
+                if not page_token:
+                    break
+
+            print(
+                f"=== [{idol_obj.idol}] 동기화 완료 (전체 {total_cnt}건 중 장소/주소 추출 {success_cnt}건) ==="
             )
-
-            events = events_result.get("items", [])
-
-            for event in events:
-                total_cnt += 1
-                start_str = event["start"].get("dateTime", event["start"].get("date"))
-                event_date = parser.parse(start_str).date()
-                title = event.get("summary", "제목 없음")[:200]
-
-                # description 파싱
-                description = event.get("description", "")
-                venue_name, address = parse_event_description(description)
-
-                # description에 회장이 없는데 location 필드는 존재하는 경우
-                if venue_name == "위치 없음" and event.get("location"):
-                    venue_name = event.get("location")[:200]
-
-                # DB 저장 (update_or_create)
-                Schedule_info.objects.update_or_create(
-                    event_title=title,
-                    event_date=event_date,
-                    defaults={
-                        "idol_name": "inuwasi",
-                        "event_category": "공식일정",
-                        "event_location": venue_name[:200],
-                        "event_address": address[:300],
-                    },
-                )
-
-                if venue_name != "위치 없음" or address != "주소 없음":
-                    success_cnt += 1
-                    print(f"[성공] 날짜: {event_date} | 회장: {venue_name} | 주소: {address}")
-
-            page_token = events_result.get("nextPageToken")
-            if not page_token:
-                break
-
-        print(f"=== 동기화 완료 (전체 {total_cnt}건 중 장소/주소 추출 {success_cnt}건) ===")
 
     except Exception as e:
         print(f"구글 캘린더 연동 에러 발생: {e}")
 
 def index(request):
-    # get_schedule()
     return render(request, "index.html")
 
 
-# 2. API 호출 없이 DB에서 지정한 기간의 데이터를 조회하는 뷰
-# 2. DB에서 지정한 기간의 데이터를 조회하는 뷰 (DateField용 간소화)
 def view_schedule(request):
-    start_date = request.GET.get('start')  # 형식: 'YYYY-MM-DD'
-    end_date = request.GET.get('end')      # 형식: 'YYYY-MM-DD'
+    start_date = request.GET.get('start')  # 'YYYY-MM-DD'
+    end_date = request.GET.get('end')      # 'YYYY-MM-DD'
 
     filter_kwargs = {}
     if start_date and end_date:
-        # DateField 필터링: 문자열('YYYY-MM-DD') 그대로 range 검색 가능
         filter_kwargs['event_date__range'] = [start_date, end_date]
 
-    # DB에서 필터링된 데이터 조회
-    schedule_list = get_list_or_404(Schedule_info, **filter_kwargs)
+    # Foreign Key 조회를 위해 select_related 적용 (DB 쿼리 최적화)
+    schedule_queryset = Schedule_info.objects.filter(**filter_kwargs).select_related('idol', 'idol__country')
+    
+    schedule_list = get_list_or_404(schedule_queryset)
     context = {"schedule_list": schedule_list}
 
     return render(request, "schedule.html", context)
