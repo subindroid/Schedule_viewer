@@ -2,13 +2,36 @@
 
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>일정 조회</title>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="{% static 'css/index_style.css' %}">
 </head>
+<!-- 국가 선택에 따라 아이돌 필터링하는 간단한 JS -->
+<script>
+    function filterIdols() {
+        const selectedCountry = document.getElementById('country_select').value;
+        const idolSelect = document.getElementById('idol_select');
+        const options = idolSelect.querySelectorAll('option');
+
+        idolSelect.value = ""; // 아이돌 선택 초기화
+
+        options.forEach(option => {
+            if (!option.value) return; // 기본 안내 문구는 스킵
+
+            if (option.getAttribute('data-country') === selectedCountry) {
+                option.style.display = "block";
+            } else {
+                option.style.display = "none";
+            }
+        });
+    }
+</script>
+
 <body>
 
     <div style="position:relative;">
@@ -27,13 +50,37 @@
             <div class="card-body">
                 <form action="{% url 'inuwasischedule:view_schedule' %}" method="GET">
 
+                    <!-- 1. 국가 선택 -->
+                    <div class="form-group form-group-country">
+                        <label for="country_select">국가 선택</label>
+                        <select id="country_select" name="country_id" required onchange="filterIdols()">
+                            <option value="">-- 국가를 선택하세요 --</option>
+                            {% for country in countries %}
+                            <option value="{{ country.country_id }}">{{ country.country }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- 2. 아이돌 선택 (국가 선택 시 활성화) -->
+                    <div class="form-group form-group-idol">
+                        <label for="idol_select">아이돌 선택</label>
+                        <select id="idol_select" name="idol_id" required>
+                            <option value="">-- 아이돌을 선택하세요 --</option>
+                            {% for country in countries %}
+                            {% for idol in country.idols.all %}
+                            <option value="{{ idol.idol_id }}" data-country="{{ country.country_id }}"
+                                style="display:none;">
+                                {{ idol.idol }}
+                            </option>
+                            {% endfor %}
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- 3. 시작일 / 종료일 -->
                     <div class="form-group">
                         <label for="start_date">시작일</label>
                         <input type="date" id="start_date" name="start" required>
-                    </div>
-
-                    <div class="divider">
-                        <div class="divider-dot">↓</div>
                     </div>
 
                     <div class="form-group">
@@ -50,4 +97,5 @@
     </div>
 
 </body>
+
 </html>
